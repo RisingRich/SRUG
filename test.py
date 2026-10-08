@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from PIL import Image
 
-from models import NestedUResnet
+from models import SRUG
 from mydatasets import IMAGE_EXTENSIONS
 
 
@@ -34,7 +34,7 @@ def inference(model, tensor, out_size):
 
 def load_generator(checkpoint_path, device):
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model = NestedUResnet(**checkpoint.get("model_kwargs", {})).to(device)
+    model = SRUG(**checkpoint.get("model_kwargs", {})).to(device)
     model.load_state_dict(checkpoint["G_model"], strict=False)
     model.eval()
     return model

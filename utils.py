@@ -55,8 +55,13 @@ def append_history(path, row, fieldnames):
         writer.writerow(row)
 
 
-def ms_ssim_loss(pred, target):
+def mss_loss(pred, target):
+    """Multi-Scale Structural Loss (MSS loss): 1 - MS-SSIM on [0, 1] tensors."""
     return 1.0 - ms_ssim(pred, target, data_range=1.0, size_average=True)
+
+
+# Retain the previous import name for existing training scripts.
+ms_ssim_loss = mss_loss
 
 
 def charbonnier_loss(pred, target, eps=1e-3):

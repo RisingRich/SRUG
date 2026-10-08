@@ -8,7 +8,10 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from models import NestedUResnet
+from models import (
+    DECODER_TYPES, ENCODER_TYPES, SRUG,
+    normalize_decoder_type, normalize_encoder_type,
+)
 from mydatasets import PairedImageDataset, make_default_dirs
 from utils import (
     append_history,
@@ -16,7 +19,7 @@ from utils import (
     checkpoint_score,
     ensure_dir,
     evaluate_images,
-    ms_ssim_loss,
+    mss_loss,
     set_seed,
     tensor_to_uint8_image,
     write_json,
@@ -25,18 +28,18 @@ from utils import (
 
 def build_model(opt):
     model_kwargs = {
-        "encoder_type": opt.encoder_type,
-        "decoder_type": opt.decoder_type,
+        "encoder_type": normalize_encoder_type(opt.encoder_type),
+        "decoder_type": normalize_decoder_type(opt.decoder_type),
         "decoder_attention": opt.decoder_attention,
     }
-    return NestedUResnet(**model_kwargs), model_kwargs
+    return SRUG(**model_kwargs), model_kwargs
 
 
 def train_one_epoch(model, loader, optimizer, device, opt):
     model.train()
     l1_loss = nn.L1Loss()
     mse_loss = nn.MSELoss()
-    totals = {"loss_G": 0.0, "loss_L1": 0.0, "loss_MS_SSIM": 0.0, "loss_L2": 0.0}
+    totals = {"loss_G": 0.0, "loss_L1": 0.0, "loss_MSS": 0.0, "loss_L2": 0.0}
 
     progress = tqdm(loader, desc="train", leave=False)
     for source, target in progress:
@@ -45,12 +48,12 @@ def train_one_epoch(model, loader, optimizer, device, opt):
         pred = model(source)
 
         loss_l1 = l1_loss(pred, target)
-        loss_ms = ms_ssim_loss((pred + 1.0) * 0.5, (target + 1.0) * 0.5)
+        loss_mss = mss_loss((pred + 1.0) * 0.5, (target + 1.0) * 0.5)
         loss_l2 = mse_loss(pred, target)
         loss_charb = charbonnier_loss(pred, target)
         loss_g = (
             opt.l1_weight * loss_l1
-            + opt.ms_ssim_weight * loss_ms
+            + opt.mss_weight * loss_mss
             + opt.l2_weight * loss_l2
             + opt.charbonnier_weight * loss_charb
         )
@@ -61,7 +64,7 @@ def train_one_epoch(model, loader, optimizer, device, opt):
 
         totals["loss_G"] += float(loss_g.item())
         totals["loss_L1"] += float(loss_l1.item())
-        totals["loss_MS_SSIM"] += float(loss_ms.item())
+        totals["loss_MSS"] += float(loss_mss.item())
         totals["loss_L2"] += float(loss_l2.item())
         progress.set_description(f"train loss_G={loss_g.item():.4f}")
 
@@ -132,7 +135,7 @@ def main(opt):
         best_epoch = checkpoint.get("best_epoch", best_epoch)
 
     writer = SummaryWriter(str(run_dir / "train_logs"))
-    history_fields = ["epoch", "loss_G", "loss_L1", "loss_MS_SSIM", "loss_L2", "PSNR", "SSIM", "LPIPS", "MS-SSIM", "MSE", "NMSE"]
+    history_fields = ["epoch", "loss_G", "loss_L1", "loss_MSS", "loss_L2", "PSNR", "SSIM", "LPIPS", "MS-SSIM", "MSE", "NMSE"]
 
     for epoch in range(start_epoch, opt.epoch):
         train_losses = train_one_epoch(model, train_loader, optimizer, device, opt)
@@ -175,7 +178,7 @@ def main(opt):
 
 
 def cfg():
-    parser = argparse.ArgumentParser(description="Train SRUG-style generator-only SRU-Pix2Pix.")
+    parser = argparse.ArgumentParser(description="Train SRUG with a CRRB encoder, NMD, and MSS loss.")
     parser.add_argument("--data_root", type=str, default="")
     parser.add_argument("--source_train", type=str, default="")
     parser.add_argument("--target_train", type=str, default="")
@@ -190,11 +193,18 @@ def cfg():
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--weight", type=str, default="")
     parser.add_argument("--resume_optimizer", action="store_true")
-    parser.add_argument("--encoder_type", choices=("resnet", "seresnet"), default="seresnet")
-    parser.add_argument("--decoder_type", choices=("unet", "unetpp"), default="unetpp")
+    parser.add_argument("--encoder_type", type=normalize_encoder_type,
+                        choices=ENCODER_TYPES, default="crrb",
+                        help="CRRB encoder or the matched encoder without SE")
+    parser.add_argument("--decoder_type", type=normalize_decoder_type,
+                        choices=DECODER_TYPES, default="nmd",
+                        help="Nested Multi-Scale Decoder or sequential decoder ablation")
     parser.add_argument("--decoder_attention", action="store_true")
     parser.add_argument("--l1_weight", type=float, default=100.0)
-    parser.add_argument("--ms_ssim_weight", type=float, default=100.0)
+    parser.add_argument("--mss_weight", type=float, default=100.0,
+                        help="weight of Multi-Scale Structural Loss (MSS loss)")
+    parser.add_argument("--ms_ssim_weight", dest="mss_weight", type=float,
+                        default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument("--l2_weight", type=float, default=0.0)
     parser.add_argument("--charbonnier_weight", type=float, default=0.0)
     parser.add_argument("--best_metric", choices=("psnr", "composite"), default="psnr")
